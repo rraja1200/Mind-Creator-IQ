@@ -1,0 +1,10 @@
+streamlit
+google-genai
+google-api-python-client
+google-auth-oauthlib
+google-auth-httplib2
+python-dotenv
+pillow
+requests
+edge-tts
+moviepy
