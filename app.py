@@ -11,9 +11,9 @@ from PIL import Image, ImageDraw, ImageFont
 import edge_tts
 
 try:
-    from moviepy.editor import ImageClip, AudioFileClip, concatenate_videoclips
+    from moviepy.editor import ImageClip, VideoFileClip, AudioFileClip, concatenate_videoclips
 except ImportError:
-    from moviepy import ImageClip, AudioFileClip, concatenate_videoclips
+    from moviepy import ImageClip, VideoFileClip, AudioFileClip, concatenate_videoclips
 
 from google import genai
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -89,67 +89,87 @@ def generate_ai_content(prompt):
     st.error("⚠️ Free API quota limit reached. Please wait a minute.")
     return None
 
-# Safe Image Generator with Fallback & Timeout Protection
-def generate_scene_image(vis_prompt, sub_text, w, h, path):
-    full_p = f"{vis_prompt}, high quality, ultra detailed, 8k resolution, no text"
-    url = f"https://image.pollinations.ai/prompt/{requests.utils.quote(full_p)}?width={w}&height={h}&nologo=true"
-    
-    img = None
-    for attempt in range(2): # Try twice if timeout occurs
-        try:
-            res = requests.get(url, timeout=60)
-            if res.status_code == 200:
-                img = Image.open(BytesIO(res.content)).convert("RGB").resize((w, h))
-                break
-        except Exception:
-            continue
-            
-    # Fallback to dark branded background if API fails
-    if img is None:
-        img = Image.new("RGB", (w, h), color=(15, 23, 42))
-
-    if sub_text:
-        draw = ImageDraw.Draw(img)
-        bar = int(h * 0.8)
-        draw.rectangle([(0, bar), (w, h)], fill=(0, 0, 0))
-        draw.text((40, bar + 25), sub_text[:85], fill=(255, 255, 0))
-        
-    img.save(path, "JPEG", quality=95)
-    return path
-
 async def _save_tts(text, voice, out):
     await edge_tts.Communicate(text, voice).save(out)
 
-def build_full_video(scenes, style, voice_id, is_short=False):
-    os.makedirs("outputs/scenes", exist_ok=True)
+# Build Video using User Uploaded Storage Media (Images/Videos) or Fallback Dynamic Cards
+def build_media_custom_video(scenes, voice_id, uploaded_files, style, is_short=False):
+    os.makedirs("outputs/media_scenes", exist_ok=True)
     w, h = (1080, 1920) if is_short else (1920, 1080)
     clips = []
+    
+    # Save uploaded storage files locally
+    saved_media_paths = []
+    if uploaded_files:
+        for idx, file in enumerate(uploaded_files):
+            m_path = os.path.join("outputs/media_scenes", f"upload_{idx}_{file.name}")
+            with open(m_path, "wb") as f:
+                f.write(file.getbuffer())
+            saved_media_paths.append(m_path)
+
     for i, sc in enumerate(scenes):
         narr = sc.get("narration", "")
-        vp = f"{sc.get('visual_prompt', '')}, {style}"
-        img_p, aud_p = f"outputs/scenes/{i}.jpg", f"outputs/scenes/{i}.mp3"
-        generate_scene_image(vp, narr, w, h, img_p)
+        aud_p = os.path.join("outputs/media_scenes", f"scene_{i}.mp3")
         asyncio.run(_save_tts(narr, voice_id, aud_p))
-        aud = AudioFileClip(aud_p)
-        clips.append(ImageClip(img_p).set_duration(aud.duration + 0.3).set_audio(aud))
+        aud_clip = AudioFileClip(aud_p)
+        dur = aud_clip.duration + 0.3
+
+        # If user provided storage media, use it cyclically; otherwise generate styled history card
+        if saved_media_paths:
+            media_file = saved_media_paths[i % len(saved_media_paths)]
+            if media_file.endswith((".mp4", ".mov", ".avi")):
+                try:
+                    img_clip = VideoFileClip(media_file).subclip(0, dur).resize((w, h)).set_audio(aud_clip)
+                    clips.append(img_clip)
+                    continue
+                except Exception:
+                    pass # Fallback to image if video load fails
+            
+            # Load user image and burn subtitle
+            try:
+                img = Image.open(media_file).convert("RGB").resize((w, h))
+            except Exception:
+                img = Image.new("RGB", (w, h), color=(15, 23, 42))
+        else:
+            # Fallback historical theme card if no files uploaded yet
+            img = Image.new("RGB", (w, h), color=(20, 24, 33))
+            draw = ImageDraw.Draw(img)
+            draw.rectangle([(50, 50), (w-50, h-50)], outline=(212, 175, 55), width=5)
+            draw.text((100, 120), f"CHAPTER {i+1} : HISTORICAL ARCHIVE", fill=(212, 175, 55))
+            draw.text((100, 200), f"TOPIC VISUAL: {sc.get('visual_prompt', '')[:90]}", fill=(255, 255, 255))
+
+        # Burn Subtitles on Image
+        if narr:
+            draw = ImageDraw.Draw(img)
+            bar_top = int(h * 0.75)
+            draw.rectangle([(0, bar_top), (w, h)], fill=(0, 0, 0))
+            draw.rectangle([(0, bar_top), (w, bar_top + 6)], fill=(212, 175, 55))
+            draw.text((60, bar_top + 40), narr[:90], fill=(255, 255, 255))
+
+        img_p = os.path.join("outputs/media_scenes", f"final_img_{i}.jpg")
+        img.save(img_p, "JPEG", quality=95)
+        
+        img_clip = ImageClip(img_p).set_duration(dur).set_audio(aud_clip)
+        clips.append(img_clip)
+
     final = concatenate_videoclips(clips, method="compose")
-    out_vid = f"outputs/vid_{int(datetime.datetime.now().timestamp())}.mp4"
+    out_vid = f"outputs/custom_vid_{int(datetime.datetime.now().timestamp())}.mp4"
     final.write_videofile(out_vid, fps=24, codec="libx264", audio_codec="aac")
     return out_vid
 
 # ================= UI & STUDIO DASHBOARD =================
-st.markdown("### 🎬 17 Studios | **YouTube IQ** <span style='color:green; float:right; font-size:16px;'>● CONNECTED (Gemini 3.1 Pro)</span>", unsafe_allow_html=True)
+st.markdown("### 🎬 17 Studios | **YouTube IQ** <span style='color:green; float:right; font-size:16px;'>● CONNECTED (5 TB Storage Active)</span>", unsafe_allow_html=True)
 st.divider()
 
 col_c1, col_c2, col_c3, col_c4 = st.columns(4)
 with col_c1:
-    st.info("🧠 **/yt-seo**\nAuto Title, Tags & Description")
+    st.info("🧠 **/yt-seo**\nAuto Title & Tags")
 with col_c2:
-    st.success("📦 **/yt-package**\nFull Storyboard & Script")
+    st.success("📦 **/yt-package**\nStoryboard & Script")
 with col_c3:
-    st.warning("🖼️ **/yt-shorts**\nHD Thumbnail Studio")
+    st.warning("🖼️ **/storage-media**\n5 TB Vault Connected")
 with col_c4:
-    st.error("🚀 **Auto-Pipeline**\nZero-Budget 1080p Render")
+    st.error("🚀 **Auto-Pipeline**\n1080p Custom Render")
 
 st.divider()
 
@@ -161,45 +181,50 @@ style = st.sidebar.selectbox("Video Style", VIDEO_STYLES)
 voice_lbl = st.sidebar.selectbox("AI Voiceover", list(VOICE_OPTIONS.keys()))
 
 st.sidebar.divider()
-st.sidebar.markdown("📂 **Local Storage Status:** `5 TB Connected` (Ready for bulk rendering)")
+st.sidebar.markdown("📂 **Local Storage Status:** `5 TB Vault Linked`")
+uploaded_storage_files = st.sidebar.file_uploader(
+    "📁 Upload Storage Media (Images/Videos for Characters & History)", 
+    type=["jpg", "png", "jpeg", "mp4", "mov"], 
+    accept_multiple_files=True
+)
 
 tab1, tab2, tab3, tab4 = st.tabs([
     "📝 1. Script, Storyboard & SEO",
-    "🎥 2. AI Video Studio (1080p MP4)",
+    "🎥 2. AI Video Studio (Custom Media)",
     "🖼️ 3. AI Thumbnail Studio",
     "📅 4. YouTube Auto-Uploader"
 ])
 
 with tab1:
     st.subheader("🔥 High-RPM Niche & Script Generator")
-    custom_topic = st.text_input("Video Topic / Prompt", value=f"How to master {sub_niche} in 2026 (Step-by-Step Guide)")
+    custom_topic = st.text_input("Video Topic / Prompt", value=f"The Untold History & Secrets of {sub_niche}")
     
-    if st.button("⚡ Generate Script, Storyboard & SEO Package"):
+    if st.button("⚡ Generate Script & Storyboard"):
         if custom_topic:
             prompt = f"""
-            Act as a YouTube Automation Expert. Create a 4-scene video script and SEO package for topic: '{custom_topic}' in niche '{niche} -> {sub_niche}'.
+            Act as an elite Documentary Director. Create a 4-scene video script and SEO package for topic: '{custom_topic}' in niche '{niche} -> {sub_niche}'.
             Return ONLY valid JSON (no markdown ticks):
             {{
               "titles": ["Title 1", "Title 2", "Title 3"],
-              "description": "SEO description with timestamps and keywords",
+              "description": "SEO description with history and timestamps",
               "tags": "tag1, tag2, tag3, tag4, tag5",
               "thumbnail_prompt": "Vibrant thumbnail prompt",
-              "thumbnail_text": "HIGH CTR",
+              "thumbnail_text": "HISTORY REVEALED",
               "scenes": [
-                {{"scene_number": 1, "narration": "Spoken sentence", "visual_prompt": "Visual description"}},
-                {{"scene_number": 2, "narration": "Spoken sentence", "visual_prompt": "Visual description"}},
-                {{"scene_number": 3, "narration": "Spoken sentence", "visual_prompt": "Visual description"}},
-                {{"scene_number": 4, "narration": "Spoken sentence", "visual_prompt": "Visual description"}}
+                {{"scene_number": 1, "narration": "Engaging historical narration sentence", "visual_prompt": "Character or history visual description"}},
+                {{"scene_number": 2, "narration": "Engaging historical narration sentence", "visual_prompt": "Character or history visual description"}},
+                {{"scene_number": 3, "narration": "Engaging historical narration sentence", "visual_prompt": "Character or history visual description"}},
+                {{"scene_number": 4, "narration": "Engaging historical narration sentence", "visual_prompt": "Character or history visual description"}}
               ]
             }}
             """
-            with st.spinner("Gemini 3.1 Pro generating optimized script & storyboard..."):
+            with st.spinner("Gemini 3.1 Pro generating deep historical storyboard..."):
                 raw = generate_ai_content(prompt)
                 if raw:
                     clean = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
                     try:
                         st.session_state["project_data"] = json.loads(clean)
-                        st.success("✅ Storyboard & SEO Package Generated Successfully!")
+                        st.success("✅ Deep Storyboard & Script Generated Successfully!")
                     except Exception:
                         st.code(raw)
 
@@ -211,36 +236,48 @@ with tab1:
         st.json(p.get("scenes"))
 
 with tab2:
-    st.subheader("🎬 AI Video Studio — Render 1080p MP4")
+    st.subheader("🎬 AI Video Studio — Render with Your 5 TB Storage Media")
     if "project_data" not in st.session_state:
         st.info("पहले Tab 1 में जाकर स्क्रिप्ट जनरेट करें।")
     else:
+        if uploaded_storage_files:
+            st.success(f"✅ {len(uploaded_storage_files)} files loaded from your storage vault for video composition!")
+        else:
+            st.info("💡 Tip: आप चाहें तो बाएं साइडबार से अपनी 5 TB स्टोरेज की तस्वीरें या वीडियो अपलोड कर सकते हैं, वरना ऐप ऑटोमैटिक हिस्टोरिकल कार्ड बनाएगी।")
+
         is_sh = "Shorts" in style
-        if st.button("🚀 Start Automated Video Rendering (100% Free)"):
+        if st.button("🚀 Render Custom 1080p Video with Storage Media"):
             scenes = st.session_state["project_data"].get("scenes", [])
-            with st.spinner("Rendering scenes, voiceover, subtitles & video file..."):
+            with st.spinner("Compiling custom media, voiceover, and subtitles into 1080p video..."):
                 try:
-                    v_path = build_full_video(scenes, style, VOICE_OPTIONS[voice_lbl], is_sh)
+                    v_path = build_media_custom_video(scenes, VOICE_OPTIONS[voice_lbl], uploaded_storage_files, style, is_sh)
                     st.session_state["final_video"] = v_path
-                    st.success("🎉 Full 1080p Video Rendered & Saved to Storage!")
+                    st.success("🎉 Custom 1080p Video Successfully Rendered from Storage!")
                 except Exception as e:
                     st.error(f"Render Error: {e}")
 
         if "final_video" in st.session_state and os.path.exists(st.session_state["final_video"]):
             st.video(st.session_state["final_video"])
             with open(st.session_state["final_video"], "rb") as vf:
-                st.download_button("⬇️ Download 1080p MP4", data=vf, file_name="youtube_iq_final.mp4", mime="video/mp4")
+                st.download_button("⬇️ Download Custom 1080p MP4", data=vf, file_name="youtube_iq_custom.mp4", mime="video/mp4")
 
 with tab3:
     st.subheader("🖼️ AI Thumbnail Studio")
     p_info = st.session_state.get("project_data", {})
-    t_pr = st.text_input("Thumbnail Prompt", value=p_info.get("thumbnail_prompt", "Cinematic dramatic thumbnail, high contrast"))
-    t_tx = st.text_input("Thumbnail Bold Text", value=p_info.get("thumbnail_text", "MUST WATCH!"))
+    t_pr = st.text_input("Thumbnail Prompt", value=p_info.get("thumbnail_prompt", "Cinematic historical documentary thumbnail"))
+    t_tx = st.text_input("Thumbnail Bold Text", value=p_info.get("thumbnail_text", "THE SECRET!"))
 
-    if st.button("🎨 Generate HD Thumbnail (1280x720)"):
+    if st.button("🎨 Generate HD Thumbnail"):
         os.makedirs("outputs", exist_ok=True)
         t_out = f"outputs/thumb_{int(datetime.datetime.now().timestamp())}.jpg"
-        generate_scene_image(t_pr, t_tx, 1280, 720, t_out)
+        img = Image.new("RGB", (1280, 720), color=(10, 15, 25))
+        draw = ImageDraw.Draw(img)
+        draw.rectangle([(40, 40), (1240, 680)], outline=(212, 175, 55), width=6)
+        draw.text((80, 100), "DOCUMENTARY ARCHIVE", fill=(212, 175, 55))
+        draw.text((80, 200), f"TOPIC: {t_pr[:60]}", fill=(255, 255, 255))
+        draw.rectangle([(80, 450), (1200, 600)], fill=(185, 28, 28))
+        draw.text((120, 500), t_tx.upper(), fill=(255, 255, 255))
+        img.save(t_out, "JPEG", quality=95)
         st.session_state["thumb_path"] = t_out
         st.success("Thumbnail Generated!")
 
@@ -250,11 +287,5 @@ with tab3:
             st.download_button("⬇️ Download Thumbnail JPG", data=tf, file_name="thumbnail.jpg", mime="image/jpeg")
 
 with tab4:
-    st.subheader("📅 YouTube Auto-Uploader & Scheduler")
-    st.info("💡 Make sure `client_secrets.json` is uploaded to your GitHub repo to enable one-click YouTube publishing.")
-    
-    yt_title = st.text_input("Upload Title", value=st.session_state.get("project_data", {}).get("titles", [""])[0])
-    yt_desc = st.text_area("Upload Description", value=st.session_state.get("project_data", {}).get("description", ""))
-    
-    if st.button("🚀 Publish Directly to Connected YouTube Channel"):
-        st.warning("⚠️ YouTube API OAuth client_secrets.json not found in repository root. Please upload client_secrets.json to enable direct publishing.")
+    st.subheader("📅 YouTube Auto-Uploader")
+    st.info("💡 Upload `client_secrets.json` to GitHub root for one-click publishing.")
