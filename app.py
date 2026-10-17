@@ -27,7 +27,6 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or st.secrets.get("GEMINI_API_KEY",
 
 st.set_page_config(page_title="YouTube IQ - AI Automation Studio", layout="wide")
 
-# Database Initialization
 def init_db():
     conn = sqlite3.connect("youtube_iq.db")
     c = conn.cursor()
@@ -50,7 +49,6 @@ def init_db():
 
 init_db()
 
-# Modes & High-RPM Niches
 MODES = {
     "1. USA High-RPM Mode ($30-50 RPM)": {"lang": "American English", "voice": "en-US-ChristopherNeural", "audience": "US Tier-1 Audience", "best_time": "6:00 PM EST"},
     "2. Indian Audience Mode": {"lang": "Hindi / Hinglish", "voice": "hi-IN-MadhurNeural", "audience": "Indian Mass Market", "best_time": "6:00 PM IST"},
@@ -76,7 +74,6 @@ VOICE_OPTIONS = {
     "Indian Female (Swara - Hindi/Hinglish)": "hi-IN-SwaraNeural"
 }
 
-# Gemini AI Helper with Fallback
 def generate_ai_content(prompt):
     if not GEMINI_API_KEY:
         st.error("⚠️ Gemini API Key missing! Check Streamlit Secrets.")
@@ -92,17 +89,31 @@ def generate_ai_content(prompt):
     st.error("⚠️ Free API quota limit reached. Please wait a minute.")
     return None
 
-# Free Visual Scene & Thumbnail Generator
+# Safe Image Generator with Fallback & Timeout Protection
 def generate_scene_image(vis_prompt, sub_text, w, h, path):
     full_p = f"{vis_prompt}, high quality, ultra detailed, 8k resolution, no text"
     url = f"https://image.pollinations.ai/prompt/{requests.utils.quote(full_p)}?width={w}&height={h}&nologo=true"
-    res = requests.get(url, timeout=45)
-    img = Image.open(BytesIO(res.content)).convert("RGB").resize((w, h))
+    
+    img = None
+    for attempt in range(2): # Try twice if timeout occurs
+        try:
+            res = requests.get(url, timeout=60)
+            if res.status_code == 200:
+                img = Image.open(BytesIO(res.content)).convert("RGB").resize((w, h))
+                break
+        except Exception:
+            continue
+            
+    # Fallback to dark branded background if API fails
+    if img is None:
+        img = Image.new("RGB", (w, h), color=(15, 23, 42))
+
     if sub_text:
         draw = ImageDraw.Draw(img)
         bar = int(h * 0.8)
         draw.rectangle([(0, bar), (w, h)], fill=(0, 0, 0))
         draw.text((40, bar + 25), sub_text[:85], fill=(255, 255, 0))
+        
     img.save(path, "JPEG", quality=95)
     return path
 
@@ -130,7 +141,6 @@ def build_full_video(scenes, style, voice_id, is_short=False):
 st.markdown("### 🎬 17 Studios | **YouTube IQ** <span style='color:green; float:right; font-size:16px;'>● CONNECTED (Gemini 3.1 Pro)</span>", unsafe_allow_html=True)
 st.divider()
 
-# Quick Studio Navigation Cards (JSFiddle style)
 col_c1, col_c2, col_c3, col_c4 = st.columns(4)
 with col_c1:
     st.info("🧠 **/yt-seo**\nAuto Title, Tags & Description")
@@ -143,7 +153,6 @@ with col_c4:
 
 st.divider()
 
-# Sidebar Setup
 st.sidebar.header("⚙️ Studio Configuration")
 mode = st.sidebar.selectbox("Select Mode", list(MODES.keys()))
 niche = st.sidebar.selectbox("Select Niche", list(NICHES.keys()))
@@ -154,7 +163,6 @@ voice_lbl = st.sidebar.selectbox("AI Voiceover", list(VOICE_OPTIONS.keys()))
 st.sidebar.divider()
 st.sidebar.markdown("📂 **Local Storage Status:** `5 TB Connected` (Ready for bulk rendering)")
 
-# Main Workspace Tabs
 tab1, tab2, tab3, tab4 = st.tabs([
     "📝 1. Script, Storyboard & SEO",
     "🎥 2. AI Video Studio (1080p MP4)",
@@ -250,4 +258,3 @@ with tab4:
     
     if st.button("🚀 Publish Directly to Connected YouTube Channel"):
         st.warning("⚠️ YouTube API OAuth client_secrets.json not found in repository root. Please upload client_secrets.json to enable direct publishing.")
-        
